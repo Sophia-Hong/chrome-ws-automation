@@ -129,3 +129,58 @@ chrome-ws-automation/
 - OpenClaw exec 연동
 - 레딧 수집 파이프라인 (서브레딧 모니터링 → 페인포인트 추출)
 - 콘텐츠 파이프라인 (비디오 스크립트, 댓글 드래프트)
+
+---
+
+## Phase 3: 에이전트 연동
+
+### OpenClaw exec에서 사용
+
+```bash
+# 서버 시작 (백그라운드)
+cd server && python bridge.py --no-repl &
+
+# 명령 실행
+python client.py navigate "https://reddit.com/r/tenants"
+python client.py snapshot
+python client.py getText "h1"
+```
+
+### 레딧 페인포인트 수집 파이프라인
+
+```bash
+# 서브레딧에서 키워드로 페인포인트 추출
+python -m pipelines.reddit_scraper \
+  --subreddit tenants \
+  --keywords "security deposit,landlord,eviction" \
+  --max-posts 15 \
+  --output results.json
+```
+
+### 콘텐츠 파이프라인
+
+```bash
+# 페인포인트 → 댓글 드래프트
+python -m pipelines.content_pipeline \
+  --input results.json \
+  --type comment-drafts \
+  --output drafts.json
+
+# 페인포인트 → 비디오 스크립트 아웃라인
+python -m pipelines.content_pipeline \
+  --input results.json \
+  --type video-scripts \
+  --output video-outlines.json
+```
+
+### 파이프라인 흐름
+
+```
+Reddit 모니터링              콘텐츠 생성
+┌──────────────┐          ┌────────────────┐
+│ reddit_scraper│ ──JSON──▶│content_pipeline│
+│  - 서브레딧   │          │  - 댓글 드래프트 │
+│  - 키워드 필터 │          │  - 비디오 스크립트│
+│  - 페인포인트  │          │  - 블로그 아웃라인│
+└──────────────┘          └────────────────┘
+```
