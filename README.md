@@ -6,181 +6,143 @@
 
 | | Playwright/Puppeteer | 이 방식 (keke_appa) |
 |---|---|---|
-| 브라우저 | 별도 인스턴스 실행 | **기존 Chrome 사용** |
-| 로그인 세션 | 매번 새로 | **유지됨** |
-| 리소스 | 무거움 | **가벼움** |
-| 감지 회피 | 봇 탐지에 걸림 | **일반 사용자처럼 보임** |
-| 설치 | npm + 브라우저 다운로드 | **Extension 하나** |
+| 브라우저 | 별도 인스턴스 필요 | 기존 Chrome 사용 |
+| 로그인 | 매번 다시 로그인 | 세션 유지 |
+| 안정성 | 브라우저 크래시 가능 | Extension은 안정적 |
+| 감지 | 자동화 감지됨 | 일반 사용자와 동일 |
+| 리소스 | 메모리 많이 사용 | 가벼움 |
 
 ## 아키텍처
 
 ```
-┌─────────────────┐     WebSocket      ┌──────────────────┐
-│ Chrome Extension │ ◄──────────────── │  Python Server   │
-│  (content.js)   │  ws://localhost:9876│  (bridge.py)     │
-│  DOM 조작/스냅샷  │ ────────────────► │  명령 전송/결과 수신 │
-└─────────────────┘                    └──────────────────┘
-                                              ▲
-                                              │
-                                       ┌──────────────┐
-                                       │ client.py    │
-                                       │ CLI / Script │
-                                       └──────────────┘
+Chrome Extension (content script + service worker)
+    ↕ WebSocket (ws://localhost:9876)
+Python Server (asyncio + websockets)
+    → navigate, click, fill, evaluate, snapshot 등 명령
+    ← DOM 결과 + 스냅샷 반환
+        → Pipelines (Reddit scraper, content pipeline)
 ```
 
 ## 빠른 시작
 
-### 1. Python 서버 실행
+### 1. Chrome Extension 설치
+1. `chrome://extensions` 접속
+2. "개발자 모드" 활성화
+3. "압축해제된 확장 프로그램을 로드합니다" → `extension/` 폴더 선택
+4. 확장 아이콘에 "ON" 뱃지 확인
 
+### 2. Python 서버 실행
 ```bash
 cd server
 pip install -r requirements.txt
+
+# Option A: 대화형 CLI (서버 + REPL)
+python server.py --cli
+
+# Option B: 서버만 실행 (API 연동용)
+python server.py
+
+# Option C: Bridge 모드 (다중 클라이언트 지원)
 python bridge.py
 ```
 
-### 2. Chrome Extension 설치
-
-1. Chrome → `chrome://extensions`
-2. "개발자 모드" ON
-3. "압축 해제된 확장 프로그램 로드" → `extension/` 폴더 선택
-4. Extension이 자동으로 `ws://localhost:9876`에 연결
-
 ### 3. 명령 실행
 
-**REPL 모드 (bridge.py 실행 중):**
+**대화형 CLI:**
 ```
-bridge> navigate https://reddit.com/r/tenants
-bridge> snapshot
-bridge> getText h1
-bridge> getLinks reddit
-bridge> click .search-input
-bridge> fill .search-input "security deposit California"
+>>> navigate https://reddit.com/r/landlord
+>>> snapshot
+>>> getText .Post
+>>> click "button[data-click-id=body]"
+>>> evaluate "document.title"
+>>> getLinks
+>>> getTabs
 ```
 
-**스크립트 모드:**
+**One-shot CLI:**
+```bash
+python cli.py navigate https://reddit.com
+python cli.py snapshot
+python cli.py evaluate "document.title"
+python cli.py getText ".main-content"
+```
+
+**Programmatic client:**
 ```bash
 python client.py navigate "https://reddit.com/r/tenants"
 python client.py snapshot
-python client.py getText "h1"
-python client.py getLinks "deposit"
 ```
 
 ## 지원 명령어
 
-| Command | Params | Description |
-|---------|--------|-------------|
-| `navigate` | `{url}` | 페이지 이동 |
-| `click` | `{selector}` | 요소 클릭 |
-| `fill` | `{selector, value}` | 입력 필드 채우기 |
-| `getText` | `{selector?}` | 텍스트 추출 (없으면 전체) |
-| `getLinks` | `{filter?}` | 링크 목록 (필터 가능) |
-| `evaluate` | `{expression}` | JS 실행 |
-| `snapshot` | `{}` | 페이지 스냅샷 (제목/헤딩/폼/메타/텍스트) |
-| `querySelector` | `{selector}` | 요소 검색 |
-| `scroll` | `{selector?/y?}` | 스크롤 |
-| `waitForSelector` | `{selector, timeout?}` | 요소 대기 |
-| `getTabs` | `{}` | 열린 탭 목록 |
-| `setActiveTab` | `{tabId}` | 활성 탭 변경 |
+| 명령 | 설명 | 파라미터 |
+|------|------|----------|
+| `navigate` | URL로 이동 | `url` |
+| `click` | 요소 클릭 | `selector` 또는 `text` |
+| `fill` | 입력필드 채우기 | `selector`, `value` |
+| `evaluate` | JS 표현식 실행 | `expression` |
+| `snapshot` | 페이지 스냅샷 (links, inputs, buttons) | - |
+| `getText` | 텍스트 추출 | `selector` (선택) |
+| `getLinks` | 모든 링크 추출 | - |
+| `getTitle` | 현재 페이지 제목 | - |
+| `getTabs` | 열린 탭 목록 | - |
+| `ping` | 연결 확인 | - |
 
-## 활용 예시
+## 파이프라인 (Phase 3)
 
-### 레딧 페인포인트 수집
-```python
-import asyncio
-from client import send_command
-
-async def scrape_reddit():
-    await send_command("navigate", {"url": "https://reddit.com/r/tenants"})
-    await asyncio.sleep(2)
-    links = await send_command("getLinks", {"filter": "security deposit"})
-    for link in links.get("result", {}).get("links", []):
-        print(link["text"], link["href"])
-
-asyncio.run(scrape_reddit())
+### Reddit Pain Point Scraper
+```bash
+python -m pipelines.reddit_scraper \
+  --subreddit tenants \
+  --keywords "security deposit,landlord,lease" \
+  --max-posts 20 \
+  --output results.json
 ```
 
-## 테스트
-
+### Content Pipeline
 ```bash
-cd tests
-pip install pytest pytest-asyncio
-pytest test_bridge.py -v
+# Reddit 답변 드래프트 생성
+python -m pipelines.content_pipeline --input results.json --type comment-drafts
+
+# 숏폼 비디오 스크립트 아웃라인
+python -m pipelines.content_pipeline --input results.json --type video-scripts
 ```
 
 ## 프로젝트 구조
 
 ```
 chrome-ws-automation/
-├── extension/
-│   ├── manifest.json      # Manifest V3
-│   ├── background.js      # WebSocket 연결 관리
-│   └── content.js         # DOM 명령 실행
-├── server/
-│   ├── bridge.py          # WebSocket 서버 + REPL
-│   ├── client.py          # CLI 클라이언트
+├── extension/           # Chrome Extension (Manifest V3)
+│   ├── manifest.json
+│   ├── background.js    # Service Worker — WebSocket 연결 관리
+│   └── content.js       # Content Script — DOM 조작
+├── server/              # Python WebSocket Server
+│   ├── server.py        # 메인 서버 + 대화형 CLI
+│   ├── bridge.py        # 다중 클라이언트 브릿지 서버
+│   ├── client.py        # 프로그래밍 클라이언트
+│   ├── cli.py           # One-shot CLI
+│   ├── test_server.py   # 서버 테스트
 │   └── requirements.txt
+├── pipelines/           # 자동화 파이프라인
+│   ├── reddit_scraper.py
+│   └── content_pipeline.py
 ├── tests/
 │   └── test_bridge.py
+├── docs/
+│   └── architecture.md
 └── README.md
 ```
 
-## Phase 3 (예정)
-
-- OpenClaw exec 연동
-- 레딧 수집 파이프라인 (서브레딧 모니터링 → 페인포인트 추출)
-- 콘텐츠 파이프라인 (비디오 스크립트, 댓글 드래프트)
-
----
-
-## Phase 3: 에이전트 연동
-
-### OpenClaw exec에서 사용
-
+## 테스트
 ```bash
-# 서버 시작 (백그라운드)
-cd server && python bridge.py --no-repl &
-
-# 명령 실행
-python client.py navigate "https://reddit.com/r/tenants"
-python client.py snapshot
-python client.py getText "h1"
+cd server && python test_server.py
+cd tests && python -m pytest test_bridge.py -v
 ```
 
-### 레딧 페인포인트 수집 파이프라인
+## 보안
+- WebSocket은 **localhost only** (외부 접근 불가)
+- Content script는 페이지 컨텍스트와 격리
+- `evaluate`는 content script 컨텍스트에서 실행
 
-```bash
-# 서브레딧에서 키워드로 페인포인트 추출
-python -m pipelines.reddit_scraper \
-  --subreddit tenants \
-  --keywords "security deposit,landlord,eviction" \
-  --max-posts 15 \
-  --output results.json
-```
-
-### 콘텐츠 파이프라인
-
-```bash
-# 페인포인트 → 댓글 드래프트
-python -m pipelines.content_pipeline \
-  --input results.json \
-  --type comment-drafts \
-  --output drafts.json
-
-# 페인포인트 → 비디오 스크립트 아웃라인
-python -m pipelines.content_pipeline \
-  --input results.json \
-  --type video-scripts \
-  --output video-outlines.json
-```
-
-### 파이프라인 흐름
-
-```
-Reddit 모니터링              콘텐츠 생성
-┌──────────────┐          ┌────────────────┐
-│ reddit_scraper│ ──JSON──▶│content_pipeline│
-│  - 서브레딧   │          │  - 댓글 드래프트 │
-│  - 키워드 필터 │          │  - 비디오 스크립트│
-│  - 페인포인트  │          │  - 블로그 아웃라인│
-└──────────────┘          └────────────────┘
-```
+## 참조
+- [Backlog Issue #51](https://github.com/Sophia-Hong/backlog/issues/51)
